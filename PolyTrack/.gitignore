@@ -1,0 +1,22 @@
+# build output
+build-win/
+.vs/
+*.user
+
+# test harness binaries and data
+tests/*.exe
+tests/*.obj
+tests/*.log
+tests/*.f32
+tests/*.wav
+tests/*.bak
+tests/pick.txt
+
+# unused iPlug2 template placeholders
+installer/
+manual/
+PolyTrack.RPP
+scripts/makedist-*
+scripts/makeinstaller-mac.sh
+scripts/update_installer-win.py
+scripts/makezip-win.py
