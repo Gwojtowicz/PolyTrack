@@ -15,8 +15,8 @@
 #define PLUG_UNIQUE_ID 'GrPT'
 #endif
 #define PLUG_MFR "Griffin Wojtowicz"
-#define PLUG_VERSION_HEX 0x00000400
-#define PLUG_VERSION_STR "0.4.0"
+#define PLUG_VERSION_HEX 0x00000401
+#define PLUG_VERSION_STR "0.4.1"
 #define PLUG_MFR_ID 'GrWj'
 #define PLUG_URL_STR "https://github.com/Gwojtowicz"
 #define PLUG_EMAIL_STR "spam@me.com"

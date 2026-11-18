@@ -1,5 +1,35 @@
 # PolyTrack changelog
 
+## 0.4.1 (2026-11-17)
+Fix: chord tones cut off, and doubled octaves in chords not read. New measure in tests/trk.cpp:
+how much of each chord tone's first 0.7 s (from 80 ms after its pick, all strings still
+ringing) the note is actually on. Pickup model, -20 dBFS (0.4.0 -> 0.4.1):
+| | 0.4.0 | 0.4.1 |
+|---|---|---|
+| chord tones on, share of their first 0.7 s | 61% | 89% |
+| chord tones dropping out | 36 | 11 |
+| chord tones switched on again while ringing | 31 | 3 |
+| chord tones found (12 chords) | 49 / 54 | 51 / 54 |
+| lingering chord ghosts | 5 | 4 |
+| chord notes, average delay | 45 ms | 37 ms (worst 220 -> 102 ms) |
+The sequence test (scales, repeated notes, riffs) is about the same (240 vs 242 of 250 found);
+in chords a damped note can now release up to ~100 ms late (4 of 250). Quieter input helps too:
+at -28 dBFS chord tones are on 86% (was 59%). Still weak: some doubled octaves (A3 over A2 in an
+open A minor, E3 over E2) are not read.
+- STRICT octaves: a note that could be an upper partial of a lower string (octave, twelfth ...)
+  is now judged on all the partials they share, on the level-preserving spectrum: it is a real
+  note when it lifts those partials 1.75x above the lower string's own neighbouring partials
+  (median). The old test compared one partial on the level-flattened spectrum, where a real
+  doubled octave almost never stood out, so E3 under E4, A3 over A2, F3 in a barre chord and the
+  like were dropped.
+- While 3 or more notes are sounding, a still-loud note may go unseen by the estimator for up to
+  100 ms (was 16 ms) before it is released: a new string's attack briefly masks ringing ones, and
+  in a chord the estimator often gives a note's partials to its octave or fifth below. Released
+  and found again, it used to switch on again (a second attack) inside a held chord.
+- Tip: below about -72 dBFS (the NOISE GATE default) the tracker treats partials as silence,
+  so a quiet signal's decaying strings drop out early. Keep the input meter around -30 to -12
+  dBFS while playing (INPUT GAIN), or lower NOISE GATE.
+
 ## 0.4.0 (2026-11-17)
 Dynamics that follow your picking, and better tracking of real playing (repeated notes, high
 ghost notes). Measured with the new sequence test (tests/seq.cpp: 250 notes in one continuous

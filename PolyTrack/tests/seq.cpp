@@ -87,7 +87,7 @@ static void RunSeq(const char* label, std::vector<SeqNote> seq, SeqStats& tot, b
 
   PolyTracker t;
   t.Init(SR);
-  t.SetSettings(TrackerSettings());
+  { TrackerSettings ts; ts.strictOctaves = g_strict != 0; t.SetSettings(ts); }
   struct Ev { NoteEvent e; double ts; };
   std::vector<Ev> evs;
   std::vector<NoteEvent> ev;

@@ -60,6 +60,13 @@ struct TrackerTuning
   float repickLoHz = 1000.0f;
   float repickFloorDb = -90.0f;
   float repickBelowPeakDb = 12.0f;
+  int sharedTest = 1;                     // octave/partial check: median over all shared partials, tonal spectrum
+  float sharedRatio = 1.75f;               // ...a real upper note lifts them at least this much
+  float holdRelYoung = 0.7f, holdRelOld = 0.4f;   // a sounding note stays detected with this x the new-note bar...
+  float holdResYoung = 0.5f, holdResOld = 0.25f;  // ...and this x its own earlier strength (young = first 50 ms)
+  int missBlock = 0;                      // a still-loud note lost by the estimator needs a new pick to return
+  int missChord = 50;                      // ...while 3+ notes are sounding
+  int missFrames = 8;                     // frames the estimator may miss a sounding note before release
   int maskFrames = 20;                    // (2 ms frames) after a pick, a still-loud note...
   int maskMiss = 8;                       // ...may be missed this many frames before release
   int highPartials = 1;                   // strict octaves also drop 9th..24th partials of a lower string
@@ -312,6 +319,7 @@ private:
     float salRes = 0.0f;
     int harm = 0; // consecutive frames judged an upper partial of a sounding lower note
     bool harmBlock = false;
+    bool missBlocked = false; // released while still loud: back only after a new pick
     std::array<float, 12> lvlHist{}; // recent note levels (dB), for re-pick detection
     float lvlPeak = -200.0f;
     int repickWait = 0; // frames left before a pending level re-pick fires
@@ -554,6 +562,35 @@ private:
       }
       if (!lower)
         continue;
+      if (gTune.sharedTest)
+      {
+        // every partial of note n is a d-th partial of the lower string. A real note on top lifts
+        // ALL of those (d, 2d, 3d ...) above the lower string's own neighbouring partials; a lone
+        // string doesn't. Compared on the level-preserving tonal spectrum (the whitened one
+        // compresses a 2x step to ~1.26x, so real octaves almost never passed), median over the
+        // shared partials so one odd partial (pick position, pickup resonance) can't decide.
+        float ratio[8];
+        int nr = 0;
+        for (int k = 1; k <= 8 && nr < 8; k++)
+        {
+          const float fs = fm * k * d;
+          if (fs * (1.0f + 1.0f / (k * d)) > 4500.0f)
+            break;
+          const float sh = _Partial(fs, kTonal);
+          const float lo1 = _Partial(fm * (k * d - 1), kTonal), hi1 = _Partial(fm * (k * d + 1), kTonal);
+          const float nb = std::sqrt(std::max(lo1, 1e-9f) * std::max(hi1, 1e-9f));
+          if (sh <= 0.0f && nb <= 1e-9f)
+            continue;
+          ratio[nr++] = sh / std::max(nb, 1e-9f);
+        }
+        if (nr == 0)
+          return m;
+        std::sort(ratio, ratio + nr);
+        const float med = (nr & 1) ? ratio[nr / 2] : 0.5f * (ratio[nr / 2 - 1] + ratio[nr / 2]);
+        if (med < gTune.sharedRatio)
+          return m;
+        continue;
+      }
       const float a = _Partial(fm * (d - 1), kWhite);
       const float b = fm * (d + 1) < 4500.0f ? _Partial(fm * (d + 1), kWhite) : a;
       const float expect = std::max(0.5f * (a + b), 1e-9f);
@@ -974,7 +1011,7 @@ private:
         continue;
       // young notes get a stricter bar, so attack ghosts still die quickly
       const bool young = S.age < kSettleFrames;
-      const float relK = young ? 0.7f : 0.4f, resK = young ? 0.5f : 0.25f;
+      const float relK = young ? gTune.holdRelYoung : gTune.holdRelOld, resK = young ? gTune.holdResYoung : gTune.holdResOld;
       const float f0 = S.trackHz > 0.0f ? S.trackHz : MidiToHz((float)n);
       const float s = _Salience(f0, kResidual);
       float raw = 0.0f;
@@ -990,6 +1027,9 @@ private:
     PROF_MARK(4)
     mLastDet = det;
     // 3. note state machine
+    int soundingNow = 0;
+    for (int n = lo; n <= hi; n++)
+      soundingNow += mNotes[n].on ? 1 : 0;
     // credible new notes: counting towards a note-on (passed every check last frame) or just started
     int newDetCount = 0;
     for (int n = lo; n <= hi; n++)
@@ -1000,6 +1040,13 @@ private:
       if (!S.on)
       {
         S.offAge = std::min(S.offAge + 1, 1000);
+        if (mOnset)
+          S.missBlocked = false; // any new pick lifts it
+        if (S.missBlocked)
+        {
+          S.seen = 0;
+          continue;
+        }
         // a frame without evidence: a chord's overlapping partials can hide a real note for a
         // frame, so a short gap pauses the count instead of restarting it
         auto miss = [&]() {
@@ -1085,6 +1132,7 @@ private:
 #endif
             const int vel = S.velocity;
             const float tr = S.trackHz;
+            mOffWhy[3]++;
             _NoteOff(n, offset, events);
             _NoteOnVel(m, S.salPeak, vel, offset, events);
             mNotes[m].relabelled = true;
@@ -1140,6 +1188,7 @@ private:
 #ifdef PT_TRACE
           if (mTraceEvents) printf("  [repick %d sal %.3g min %.3g lvl %.1f min %.1f level %.1f]\n", n, salNow, recentMin, lvl, lvlMin, mLevelDb);
 #endif
+          mOffWhy[4]++;
           _NoteOff(n, offset, events);
           _NoteOn(n, salNow, offset, events);
           continue;
@@ -1153,6 +1202,7 @@ private:
         S.harm = (mSet.strictOctaves && _HarmonicOf(n, det, true) >= 0) ? S.harm + 1 : 0;
         if (S.harm >= (S.age < kSettleFrames ? 2 : 6) * mFS)
         {
+          mOffWhy[2]++;
           _NoteOff(n, offset, events);
           S.harmBlock = true; // stays out until the next pick (no on/off churn)
           continue;
@@ -1161,12 +1211,20 @@ private:
         // keep ghosts made of other notes' partials alive)
         // a note that is still loud (weak == 0) and only lost by the estimator right after another
         // string's pick (its attack masks ringing notes) gets longer before it is released
-        const int missLimit = (S.weak == 0 && mSinceOnset < gTune.maskFrames * mFS) ? gTune.maskMiss * mFS : 8 * mFS;
+        // in a chord (3+ notes sounding) the estimator often loses a ringing string for a moment:
+        // a still-loud note gets longer there before it is released
+        const int baseMiss = (S.weak == 0 && soundingNow >= 3) ? std::max(gTune.missFrames, gTune.missChord) : gTune.missFrames;
+        const int missLimit = (S.weak == 0 && mSinceOnset < gTune.maskFrames * mFS) ? std::max(gTune.maskMiss, baseMiss) * mFS : baseMiss * mFS;
         if (S.weak >= 5 * mFS || S.miss >= missLimit)
         {
 #ifdef PT_TRACE
           if (mTraceEvents) printf("  [off %d weak %d miss %d]\n", n, S.weak, S.miss);
 #endif
+          mOffWhy[S.weak >= 5 * mFS ? 0 : 1]++;
+          // released only because the estimator gave its partials to other notes while it was still
+          // loud: it comes back only with a new pick (otherwise it flickers off/on inside a chord)
+          if (gTune.missBlock && S.weak < 5 * mFS && !mOnset)
+            S.missBlocked = true;
           _NoteOff(n, offset, events);
           continue;
         }
@@ -1283,6 +1341,8 @@ public:
   bool mTraceEvents = false;
   // why each note isn't on yet (test harness): 1 no detection, 2 bent, 3 pitch, 4 upper partial, 5 blocked, 6 lower emerging, 7 counting
   std::array<int8_t, kMaxNote> mWhy{};
+  // why sounding notes went off (test harness): 0 weak, 1 estimator missed it, 2 upper partial, 3 relabel, 4 re-pick
+  inline static int mOffWhy[5] = {};
 private:
   std::array<float, 12> mLevelHist{};
   bool mOnset = false;

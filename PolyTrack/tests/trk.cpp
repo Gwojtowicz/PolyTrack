@@ -12,6 +12,7 @@ using namespace polytrack;
 static const double SR = 48000.0;
 static float g_lpc = 0.5f;
 static bool g_noisy = false;
+static int g_strict = 1;
 static int g_pickup = 0; // 1: magnetic pickup model (velocity sensing + weak-fundamental high-pass + resonant top)
 
 // Pickup model: a magnetic pickup senses string velocity (+6 dB/oct), the pickup/cable forms a
@@ -99,6 +100,8 @@ static const char* NoteName(int n)
 struct Result { int longExtra = 0; int correct = 0, missed = 0, extra = 0; double latSum = 0; int latN = 0; double latMax = 0; };
 
 static std::vector<double> g_latS, g_latC;
+static int g_retrig = 0;
+static double g_heldSum = 0; static int g_heldN = 0, g_drops = 0, g_heldChordStart = 0; static double g_heldChordSum = 0; static int g_dropsChord = 0;
 static double Pct(std::vector<double> v, double p) { if (v.empty()) return 0; std::sort(v.begin(), v.end()); return v[(size_t)std::min<double>(v.size() - 1, p * (v.size() - 1) + 0.5)]; }
 
 // Plays `notes` together (strum spread ms between strings), runs `durS` seconds; reports.
@@ -108,7 +111,7 @@ static void RunChord(const char* label, std::vector<int> notes, float peakDb, fl
   std::mt19937 rng(1234 + notes[0] * 7 + (int)notes.size());
   PolyTracker t;
   t.Init(SR);
-  TrackerSettings s; s.maxNotes = maxNotes; s.sensitivity = sens;
+  TrackerSettings s; s.maxNotes = maxNotes; s.sensitivity = sens; s.strictOctaves = g_strict != 0;
   t.SetSettings(s);
   std::vector<KS> str(notes.size());
   const int pre = (int)(0.3 * SR), dur = (int)(1.2 * SR);
@@ -202,6 +205,34 @@ static void RunChord(const char* label, std::vector<int> notes, float peakDb, fl
     }
     if (verbose && !le.empty()) printf("   long extras:%s\n", le.c_str());
   }
+  // held: share of [pick + 80 ms, pick + 700 ms] each wanted note is ON (every string is still
+  // clearly ringing then), and how many times it drops out in that window
+  std::string heldStr;
+  {
+    for (size_t si = 0; si < notes.size(); si++)
+    {
+      const int n = notes[si];
+      const double a = pre / SR + si * strumMs * 1e-3 + 0.08, b = a + 0.62;
+      double on = -1, sum = 0;
+      int drops = 0;
+      for (size_t i = 0; i < all.size(); i++)
+      {
+        if (all[i].note != n || all[i].type == NoteEvent::kBend) continue;
+        const double t = allT[i];
+        if (all[i].type == NoteEvent::kOn) { if (on < 0) on = t; if (t > a && t < b) g_retrig++; }
+        else if (on >= 0)
+        {
+          sum += std::max(0.0, std::min(t, b) - std::max(on, a));
+          if (t > a && t < b) drops++;
+          on = -1;
+        }
+      }
+      if (on >= 0) sum += std::max(0.0, b - std::max(on, a));
+      const double held = sum / (b - a);
+      g_heldSum += held; g_heldN++; g_drops += drops;
+      if (held < 0.9) { char bb[40]; snprintf(bb, sizeof bb, " %s:%.0f%%/%d", NoteName(n), held * 100, drops); heldStr += bb; }
+    }
+  }
   tot.longExtra += r.longExtra;
   tot.correct += r.correct; tot.missed += r.missed; tot.extra += r.extra; tot.latSum += r.latSum; tot.latN += r.latN;
   tot.latMax = std::max(tot.latMax, r.latMax);
@@ -210,6 +241,7 @@ static void RunChord(const char* label, std::vector<int> notes, float peakDb, fl
     std::string w; for (int n : notes) { w += NoteName(n); w += " "; }
     printf("%-14s want[%s] ok %d miss %d extra %d lat avg %.1f max %.1f |%s\n", label, w.c_str(), r.correct, r.missed, r.extra,
            r.latN ? r.latSum / r.latN : 0, r.latMax, onStr.c_str());
+    if (!heldStr.empty()) printf("   not held (held%%/drops):%s\n", heldStr.c_str());
   }
 }
 
@@ -245,6 +277,13 @@ static void ParseTuneEnv()
   if (const char* e = getenv("HIGHP")) gTune.highPartials = atoi(e);
   if (const char* e = getenv("MASKF")) gTune.maskFrames = atoi(e);
   if (const char* e = getenv("MASKM")) gTune.maskMiss = atoi(e);
+  if (const char* e = getenv("HOLD")) sscanf(e, "%f,%f,%f,%f", &gTune.holdRelYoung, &gTune.holdRelOld, &gTune.holdResYoung, &gTune.holdResOld);
+  if (const char* e = getenv("MISSF")) gTune.missFrames = atoi(e);
+  if (const char* e = getenv("SHARED")) gTune.sharedTest = atoi(e);
+  if (const char* e = getenv("SHRATIO")) gTune.sharedRatio = (float)atof(e);
+  if (const char* e = getenv("MISSC")) gTune.missChord = atoi(e);
+  if (const char* e = getenv("MISSBLK")) gTune.missBlock = atoi(e);
+  if (const char* e = getenv("STRICT")) g_strict = atoi(e);
   if (const char* e = getenv("FASTPRES")) gTune.fastPresent = atoi(e);
   if (const char* e = getenv("FASTCENTS")) gTune.fastCents = (float)atof(e);
 }
@@ -270,11 +309,17 @@ int main(int argc, char** argv)
     {"A5 power", {45, 52, 57}},              {"F barre", {41, 48, 53, 57, 60, 65}}, {"Dyad 3rds", {64, 68}},
     {"Em7 open", {40, 47, 50, 55, 59, 64}},  {"B min barre", {47, 54, 59, 62, 66}}, {"high triad", {72, 76, 79}},
   };
+  int retrigS = g_retrig;
+  { const double hs = g_heldSum; const int hn = g_heldN, hd = g_drops; for (int& v : PolyTracker::mOffWhy) v = 0; retrigS = g_retrig;
   for (auto& c : cs) RunChord(c.name, c.n, level, 8, chords, verbose, 6, sens);
+    g_heldChordSum = g_heldSum - hs; g_heldChordStart = g_heldN - hn; g_dropsChord = g_drops - hd; }
   printf("\nSINGLE: LONG EXTRAS %d | ok %d miss %d extra %d avg lat %.1f ms max %.1f\n", single.longExtra, single.correct, single.missed, single.extra,
          single.latN ? single.latSum / single.latN : 0, single.latMax);
   printf("CHORDS: LONG EXTRAS %d | ok %d miss %d extra %d avg lat %.1f ms max %.1f\n", chords.longExtra, chords.correct, chords.missed, chords.extra,
          chords.latN ? chords.latSum / chords.latN : 0, chords.latMax);
+  printf("CHORD NOTE-OFFS by reason: weak %d, estimator missed %d, upper partial %d, relabel %d, re-pick %d\n", PolyTracker::mOffWhy[0], PolyTracker::mOffWhy[1], PolyTracker::mOffWhy[2], PolyTracker::mOffWhy[3], PolyTracker::mOffWhy[4]);
+  printf("RETRIGGERS: chord tones switched on again (or first found) 80-700 ms after their pick: %d\n", g_retrig - retrigS);
+  printf("HELD: chord tones on %.1f%% of their first 0.7 s, %d drop-outs over %d tones | single notes %.1f%%\n", g_heldChordStart ? 100.0 * g_heldChordSum / g_heldChordStart : 0.0, g_dropsChord, g_heldChordStart, (g_heldN - g_heldChordStart) ? 100.0 * (g_heldSum - g_heldChordSum) / (g_heldN - g_heldChordStart) : 0.0);
   printf("MEDIAN: single %.0f (low 6: %.0f avg) | chords median %.0f p75 %.0f\n", Pct(g_latS, 0.5),
          (g_latS.size() >= 6 ? (g_latS[0] + g_latS[1] + g_latS[2] + g_latS[3] + g_latS[4] + g_latS[5]) / 6 : 0), Pct(g_latC, 0.5), Pct(g_latC, 0.75));
   return 0;
