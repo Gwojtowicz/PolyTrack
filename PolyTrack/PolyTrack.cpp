@@ -53,6 +53,7 @@ PolyTrack::PolyTrack(const InstanceInfo& info)
   GetParam(kBendTrack)->InitBool("Pitch Bend", true);
   GetParam(kStrictOct)->InitEnum("Octaves", 0, {"Strict", "Allow"});
   GetParam(kVelRange)->InitDouble("Velocity Range", 30.0, 12.0, 48.0, 1.0, "dB");
+  GetParam(kVelTop)->InitDouble("Velocity Top", -10.0, -40.0, 0.0, 0.5, "dB");
   // MIDI out
   GetParam(kMidiOn)->InitBool("MIDI Out", true);
   GetParam(kChanMode)->InitEnum("Channels", 0, {"Single", "Per Note"});
@@ -200,8 +201,9 @@ PolyTrack::PolyTrack(const InstanceInfo& info)
       knob(gr.GetGridCell(1, 0, R, C), kMaxNotes, "Max Notes");
       knob(gr.GetGridCell(1, 1, R, C), kLowNote, "Lowest Note");
       knob(gr.GetGridCell(1, 2, R, C), kVelRange, "Vel Range");
-      toggle(gr.GetGridCell(2, 0, R, C).GetMidVPadded(26.f), kBendTrack, "Pitch Bend");
-      tabs(gr.GetGridCell(2, 1, R, C).Union(gr.GetGridCell(2, 2, R, C)).GetMidVPadded(26.f), kStrictOct, {"Strict", "Allow"}, "Octaves");
+      knob(gr.GetGridCell(2, 0, R, C), kVelTop, "Vel Top");
+      toggle(gr.GetGridCell(2, 1, R, C).GetMidVPadded(26.f), kBendTrack, "Pitch Bend");
+      tabs(gr.GetGridCell(2, 2, R, C).GetMidVPadded(26.f), kStrictOct, {"Strict", "Allow"}, "Octaves");
     }
     // MIDI OUT
     {
@@ -387,6 +389,7 @@ void PolyTrack::_ReadSettings()
   ts.lowNote = GetParam(kLowNote)->Int();
   ts.highNote = 88;
   ts.velRangeDb = (float)GetParam(kVelRange)->Value();
+  ts.velTopDb = (float)GetParam(kVelTop)->Value();
   ts.bendTracking = GetParam(kBendTrack)->Bool();
   ts.strictOctaves = GetParam(kStrictOct)->Int() == 0;
   mTracker.SetSettings(ts);

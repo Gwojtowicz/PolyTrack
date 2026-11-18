@@ -1,5 +1,32 @@
 # PolyTrack changelog
 
+## 0.4.0 (2026-11-17)
+Dynamics that follow your picking, and better tracking of real playing (repeated notes, high
+ghost notes). Measured with the new sequence test (tests/seq.cpp: 250 notes in one continuous
+take through one tracker - single notes at 5 strengths, scales, a low pentatonic run,
+repeated picking, palm-muted chugs, ringing arpeggios, a lead line; pickup model):
+| | 0.3.2 | 0.4.0 |
+|---|---|---|
+| notes found | 229 / 250 | 242 / 250 |
+| repeated picks of one note caught | 10 / 24 | 19 / 24 |
+| audible wrong notes (50 ms or longer) | 21 | 13 |
+| all wrong notes | 77 | 77 |
+| velocity vs pick strength (correlation) | 0.36 | 0.99 |
+Single-note and chord tests (tests/trk.cpp) are unchanged.
+- Velocity: measured from the note's own partials up to 5 kHz in the fast attack windows, on a
+  fixed scale. 0.3.x compared each note with a reference that faded in ~70 ms, so almost every
+  note after a short gap came out at 127, and it used the level-flattened spectrum. Now the same
+  pick always gives the same velocity: about 4.2 velocity per dB with the default 30 dB range.
+- New knob VEL TOP (Tracker panel): the input level of your hardest pick (velocity 127),
+  default -10 dBFS. VEL RANGE is the span below it. Saved sessions from earlier versions load
+  with VEL TOP at its default.
+- Repeated notes: a ringing note picked again is re-triggered when its own level jumps 6 dB at a
+  pick (partials 1-5 kHz, noise floor removed, the estimator must find it too). The decision waits
+  16 ms and is dropped if a different new note appears meanwhile (that was a neighbouring note's
+  pick leaking in).
+- STRICT octaves also drop the 9th-24th partials of a sounding lower string (a pickup makes them
+  loud; the 11th falls between semitones). These were the high ghosts (A5-C6) over low strings.
+
 ## 0.3.2 (2026-11-17)
 Faster single notes. Measured on test strings through a pickup model, -20 dBFS (0.3.1 -> 0.3.2):
 single notes median 18 -> 10 ms, average 18.0 -> 14.9 ms, worst (low D) 38 -> 32 ms, low

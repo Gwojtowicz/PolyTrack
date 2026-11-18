@@ -1,7 +1,7 @@
 # PolyTrack
 
 Polyphonic guitar-to-MIDI for a normal pickup, plus a keyboard-chord harmonizer. Windows
-standalone app and VST3. Version 0.3.2.
+standalone app and VST3. Version 0.4.0.
 
 Insert it on a guitar track: your guitar passes through, and what you play comes out of the
 plug-in's MIDI output, chords included, with velocity and pitch bend. Route that MIDI to any
@@ -12,8 +12,12 @@ synth.
 **Guitar tracker** (normal mono pickup, no special hardware)
 - Polyphonic note detection, up to 6 notes, D2 (drop D) to E6, with velocity and pitch bend.
 - Settings: input, input gain, noise gate, sensitivity (how weak a chord note may be), max
-  notes (1 = mono), lowest note, velocity range, pitch bend on/off, OCTAVES (Strict drops
-  notes that are only an upper partial of a lower string; Allow keeps them).
+  notes (1 = mono), lowest note, pitch bend on/off, OCTAVES (Strict drops notes that are only
+  an upper partial of a lower string; Allow keeps them).
+- Dynamics: velocity follows how hard each note is picked, on a fixed scale. VEL TOP is the
+  input level of your hardest pick (velocity 127, default -10 dBFS); VEL RANGE is the span
+  below it (default 30 dB, so -40 dBFS gives velocity 1). Repeated picks of a ringing note
+  re-trigger it.
 
 **MIDI out**
 - Single channel, or Per Note (MPE-style: one channel per string, its own pitch bend each).
@@ -122,6 +126,9 @@ template.
     accuracy and latency. Build with `b.bat trk`, run `trk.exe -20 0.5 0.5 0 1`
     (level dBFS, sensitivity, pick brightness, noisy input, pickup model). `sweep.ps1` compares
     tuning settings.
+  - `seq.cpp` plays a continuous take (notes at 5 strengths, scales, repeated picking, palm
+    mutes, ringing arpeggios, a lead line) through one tracker and scores notes found, wrong
+    notes, stuck notes and velocity against pick strength (`b.bat seq`, `seq.exe 1 [verbose]`).
   - `pthost.cpp` is a minimal VST3 host that runs a built plug-in on a raw float file and
     prints its MIDI output (`build.bat`).
 

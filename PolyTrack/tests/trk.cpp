@@ -213,14 +213,8 @@ static void RunChord(const char* label, std::vector<int> notes, float peakDb, fl
   }
 }
 
-int main(int argc, char** argv)
+static void ParseTuneEnv()
 {
-  float level = argc > 1 ? (float)atof(argv[1]) : -40.0f;
-  float sens = argc > 2 ? (float)atof(argv[2]) : 0.5f;
-  if (argc > 3) g_lpc = (float)atof(argv[3]);
-  if (argc > 4) g_noisy = atoi(argv[4]) != 0;
-  if (argc > 5) g_pickup = atoi(argv[5]);
-  bool verbose = getenv("BRIEF") == nullptr;
   // tuning overrides: FALL="a,b,c" NEEDK=x FRAMES=n EMERGE=n
   if (const char* e = getenv("FALL")) sscanf(e, "%f,%f,%f", &gTune.fall[0], &gTune.fall[1], &gTune.fall[2]);
   if (const char* e = getenv("NEEDK")) gTune.needK = (float)atof(e);
@@ -238,8 +232,33 @@ int main(int argc, char** argv)
   if (const char* e = getenv("ONSETDB")) gTune.onsetDb = (float)atof(e);
   if (const char* e = getenv("BLOCKMAX")) gTune.blockMax = atoi(e);
   if (const char* e = getenv("FASTREL")) gTune.fastRel = (float)atof(e);
+  if (const char* e = getenv("VELCAL")) gTune.velCalDb = (float)atof(e);
+  if (const char* e = getenv("VELRES")) gTune.velRes = atoi(e);
+  if (const char* e = getenv("REPICK")) gTune.repickDb = (float)atof(e);
+  if (const char* e = getenv("REPAGE")) gTune.repickAge = atoi(e);
+  if (const char* e = getenv("REPOWN")) gTune.repickOwn = atoi(e);
+  if (const char* e = getenv("REPLO")) gTune.repickLoHz = (float)atof(e);
+  if (const char* e = getenv("REPFLOOR")) gTune.repickFloorDb = (float)atof(e);
+  if (const char* e = getenv("REPPEAK")) gTune.repickBelowPeakDb = (float)atof(e);
+  if (const char* e = getenv("REPREL")) gTune.repickRel = (float)atof(e);
+  if (const char* e = getenv("REPWAIT")) gTune.repickWait = atoi(e);
+  if (const char* e = getenv("HIGHP")) gTune.highPartials = atoi(e);
+  if (const char* e = getenv("MASKF")) gTune.maskFrames = atoi(e);
+  if (const char* e = getenv("MASKM")) gTune.maskMiss = atoi(e);
   if (const char* e = getenv("FASTPRES")) gTune.fastPresent = atoi(e);
   if (const char* e = getenv("FASTCENTS")) gTune.fastCents = (float)atof(e);
+}
+
+#ifndef TRK_NO_MAIN
+int main(int argc, char** argv)
+{
+  float level = argc > 1 ? (float)atof(argv[1]) : -40.0f;
+  float sens = argc > 2 ? (float)atof(argv[2]) : 0.5f;
+  if (argc > 3) g_lpc = (float)atof(argv[3]);
+  if (argc > 4) g_noisy = atoi(argv[4]) != 0;
+  if (argc > 5) g_pickup = atoi(argv[5]);
+  bool verbose = getenv("BRIEF") == nullptr;
+  ParseTuneEnv();
   Result single, chords;
   printf("== single notes (peak %.0f dBFS) ==\n", level);
   int sn[] = {38, 40, 43, 45, 47, 50, 52, 55, 57, 59, 62, 64, 67, 69, 71, 74, 76, 79, 81, 84, 88};
@@ -260,3 +279,4 @@ int main(int argc, char** argv)
          (g_latS.size() >= 6 ? (g_latS[0] + g_latS[1] + g_latS[2] + g_latS[3] + g_latS[4] + g_latS[5]) / 6 : 0), Pct(g_latC, 0.5), Pct(g_latC, 0.75));
   return 0;
 }
+#endif

@@ -56,7 +56,20 @@ struct TrackerTuning
   int blend = 0;                          // 1: always take the stronger of the normal / attackK readings
   int attackMaxOn = 99;                   // attack mode only while at most this many notes are sounding
   float hopMs = 2.0f;                     // analysis interval
-  int retAge = 40;                        // a note that ended less than this (2 ms frames) ago...
+  int repickOwn = 1;                      // re-pick on the note's own (1-5 kHz, semitone-resolved) level
+  float repickLoHz = 1000.0f;
+  float repickFloorDb = -90.0f;
+  float repickBelowPeakDb = 12.0f;
+  int maskFrames = 20;                    // (2 ms frames) after a pick, a still-loud note...
+  int maskMiss = 8;                       // ...may be missed this many frames before release
+  int highPartials = 1;                   // strict octaves also drop 9th..24th partials of a lower string
+  int repickWait = 8;                     // (2 ms frames) a level re-pick waits this long for a competing new note
+  float repickRel = 0.5f;                 // ...and the estimator found it at >= this x the strongest note
+  int repickAge = 20;                     // (2 ms frames) no level re-pick before this age
+  float repickDb = 6.0f;                  // a ringing note whose level jumps this much at a pick is re-picked
+  float velCalDb = 2.0f;                  // note level -> dBFS calibration (see _NoteLevelDb; measured with tests/seq.cpp)
+  int velRes = -1;                        // window for the note level (-1 = attack-mode choice, 0 = fastest)
+  int retAge = 40;                      // a note that ended less than this (2 ms frames) ago...
   int retExtra = 6;                       // ...needs this many extra frames to return (no flicker)
   float onsetDb = 5.0f;                   // level jump that counts as a pick
   int blockMax = 100000;                  // an upper-partial block lasts at most this (2 ms frames) without a pick
@@ -138,6 +151,7 @@ struct TrackerSettings
   int lowNote = 38;           // D2 (drop D) by default
   int highNote = 88;          // E6
   float velRangeDb = 30.0f;   // dynamic range mapped onto velocity 1..127
+  float velTopDb = -10.0f;    // pick level (dBFS, after input gain) that gives velocity 127
   bool bendTracking = true;
   bool strictOctaves = true;  // reject notes that are only upper partials of a lower string
 };
@@ -177,7 +191,6 @@ public:
     mKeep06 = std::pow(0.6f, 1.0f / mFS);
     mDecPeak = std::pow(0.9995f, 1.0f / mFS);
     mDecRes = std::pow(0.995f, 1.0f / mFS);
-    mDecVel = std::pow(0.98f, 1.0f / mFS);
     const int sizes[kNumRes] = {256, 512, 1024};
     for (int r = 0; r < kNumRes; r++)
     {
@@ -208,6 +221,7 @@ public:
       R.suf.assign(R.p / 2, 0.0f);
       R.mag.assign(R.p / 2, 0.0f);
       R.wht.assign(R.p / 2, 0.0f);
+      R.ton.assign(R.p / 2, 0.0f);
       R.res.assign(R.p / 2, 0.0f);
       R.pre.assign(R.p / 2 + 1, 0.0);
       R.pre2.assign(R.p / 2 + 1, 0.0);
@@ -227,7 +241,6 @@ public:
     for (auto& s : mNotes)
       s = NoteState();
     std::fill(mRing.begin(), mRing.end(), 0.0f);
-    mVelRef = 0.0f;
     mLevelDb = -120.0f;
   }
 
@@ -274,6 +287,7 @@ private:
     std::vector<float> in, mn, suf;
     std::vector<float> mag; // raw magnitude
     std::vector<float> wht; // whitened (tonal peaks only)
+    std::vector<float> ton; // tonal part, level kept (magnitude above 3x the local floor)
     std::vector<float> res; // residual of wht during estimation
     std::vector<double> pre;
     std::vector<double> pre2;
@@ -298,6 +312,9 @@ private:
     float salRes = 0.0f;
     int harm = 0; // consecutive frames judged an upper partial of a sounding lower note
     bool harmBlock = false;
+    std::array<float, 12> lvlHist{}; // recent note levels (dB), for re-pick detection
+    float lvlPeak = -200.0f;
+    int repickWait = 0; // frames left before a pending level re-pick fires
   };
   int kSettleFrames = 25; // ~50 ms (scaled to the analysis interval in Init)
 
@@ -317,7 +334,8 @@ private:
   {
     kRaw,
     kWhite,
-    kResidual
+    kResidual,
+    kTonal
   };
 
   // Precomputed partial lookups for every MIDI note (same rules as _Partial()).
@@ -410,7 +428,7 @@ private:
     return s;
   }
 
-  const std::vector<float>& _Spec(const Res& R, ESpec s) const { return s == kRaw ? R.mag : s == kWhite ? R.wht : R.res; }
+  const std::vector<float>& _Spec(const Res& R, ESpec s) const { return s == kRaw ? R.mag : s == kWhite ? R.wht : s == kTonal ? R.ton : R.res; }
 
   // Amplitude at f (within +-25 cents, interpolated when that is less than a bin).
   float _Partial(float f, ESpec spec, int forceRes = -1) const
@@ -542,6 +560,25 @@ private:
       if (pn < 2.0f * expect)
         return m;
     }
+    // higher partials (9th..24th) of a sounding lower string: they fall between semitones
+    // (the 11th is a quarter tone off), and a pickup's resonance makes them loud enough to
+    // read as high notes. Same test: not clearly louder than that string's neighbouring partials.
+    if (gTune.highPartials)
+      for (int m = lo; m <= n - 37; m++)
+      {
+        const bool sounding = mNotes[m].on || (!requireOn && det[m]);
+        if (!sounding)
+          continue;
+        const float fm = mNotes[m].on && mNotes[m].trackHz > 0.0f ? mNotes[m].trackHz : MidiToHz((float)m);
+        const int d = (int)std::lround(f0 / fm);
+        if (d < 9 || d > 24 || std::fabs(1200.0f * std::log2(f0 / (d * fm))) > 60.0f)
+          continue;
+        const float a = _Partial(fm * (d - 1), kWhite);
+        const float b = _Partial(fm * (d + 1), kWhite);
+        const float expect = std::max(0.5f * (a + b), 1e-9f);
+        if (pn < 2.0f * expect)
+          return m;
+      }
     return -1;
   }
 
@@ -757,6 +794,7 @@ private:
         const float env = std::max((float)((R.pre2[eb] - R.pre2[ea]) / (eb - ea)), 1e-9f);
         const float above = R.mag[k] - 3.0f * fl;
         R.wht[k] = above > 0.0f ? above * std::exp2(-0.67f * std::log2(env)) : 0.0f;
+        R.ton[k] = std::max(0.0f, above);
       }
       R.res = R.wht;
       PROF_MARK(1)
@@ -808,6 +846,7 @@ private:
     std::array<bool, kMaxNote> det{};
     std::array<float, kMaxNote> detSal{};
     std::array<int8_t, kMaxNote> detPres{};
+    std::array<bool, kMaxNote> detEst{}; // found by the estimator itself (not kept by hysteresis)
     float firstSal = 0.0f;
     const int lo = std::max(0, mSet.lowNote), hi = std::min(kMaxNote - 1, mSet.highNote);
     const int maxNotes = std::clamp(mSet.maxNotes, 1, 8);
@@ -921,6 +960,7 @@ private:
       det[best] = true;
       detSal[best] = s;
       detPres[best] = (int8_t)present;
+      detEst[best] = true;
       _Cancel(f0);
     }
 
@@ -950,6 +990,10 @@ private:
     PROF_MARK(4)
     mLastDet = det;
     // 3. note state machine
+    // credible new notes: counting towards a note-on (passed every check last frame) or just started
+    int newDetCount = 0;
+    for (int n = lo; n <= hi; n++)
+      newDetCount += ((det[n] && !mNotes[n].on && mNotes[n].seen > 0) || (mNotes[n].on && mNotes[n].age < gTune.repickWait * mFS)) ? 1 : 0;
     for (int n = lo; n <= hi; n++)
     {
       NoteState& S = mNotes[n];
@@ -1058,10 +1102,43 @@ private:
           S.hist[i] = S.hist[i - 1];
         S.hist[0] = salNow;
         S.salPeak = std::max(S.salPeak * mDecPeak, salNow);
-        if (S.age > 8 * mFS && mOnset && det[n] && salNow > 3.0f * recentMin && recentMin > 0.0f)
+        // ...or the note's real level (not the flattened spectrum, where a 10 dB harder pick
+        // looks like ~3 dB) jumps against its recent minimum at a pick
+        // (floored: a damped note has no tonal part left, and -inf would let any trace count)
+        const float lvl = std::max(gTune.repickFloorDb, gTune.repickOwn ? _NoteOwnLevelDb(n) : _NoteLevelDb(n));
+        float lvlMin = lvl;
+        for (int i = 0; i < mHistN; i++)
+          lvlMin = std::min(lvlMin, S.lvlHist[i]);
+        for (int i = mHistN - 1; i > 0; i--)
+          S.lvlHist[i] = S.lvlHist[i - 1];
+        S.lvlHist[0] = lvl;
+        S.lvlPeak = std::max(S.lvlPeak, lvl);
+        // (not during the note's own attack: the fast window is still filling for ~30 ms; and a
+        // real re-pick comes back near the note's earlier level, leakage from another pick doesn't)
+        const bool levelRepick = gTune.repickDb > 0.0f && S.age > gTune.repickAge * mFS && lvl > lvlMin + gTune.repickDb
+                                 && lvl > S.lvlPeak - gTune.repickBelowPeakDb && detEst[n] && detSal[n] >= gTune.repickRel * firstSal;
+        // a level re-pick waits a few frames: if another new note shows up meanwhile, the jump was
+        // that note's pick leaking into this one (a damped note followed by a new one), not a re-pick
+        bool fireLevelRepick = false;
+        if (S.repickWait > 0)
         {
+          if (newDetCount > 0)
+            S.repickWait = 0;
+          else if (--S.repickWait == 0)
+            fireLevelRepick = true;
+        }
+        else if (S.age > 8 * mFS && mOnset && det[n] && levelRepick)
+        {
+          if (gTune.repickWait <= 0)
+            fireLevelRepick = true;
+          else
+            S.repickWait = gTune.repickWait * mFS;
+        }
+        if (fireLevelRepick || (S.age > 8 * mFS && mOnset && det[n] && salNow > 3.0f * recentMin && recentMin > 0.0f))
+        {
+          S.repickWait = 0;
 #ifdef PT_TRACE
-          if (mTraceEvents) printf("  [repick %d sal %.3g min %.3g]\n", n, salNow, recentMin);
+          if (mTraceEvents) printf("  [repick %d sal %.3g min %.3g lvl %.1f min %.1f level %.1f]\n", n, salNow, recentMin, lvl, lvlMin, mLevelDb);
 #endif
           _NoteOff(n, offset, events);
           _NoteOn(n, salNow, offset, events);
@@ -1082,7 +1159,10 @@ private:
         }
         // release when the estimator stops finding the note (judging by the full spectrum would
         // keep ghosts made of other notes' partials alive)
-        if (S.weak >= 5 * mFS || S.miss >= 8 * mFS)
+        // a note that is still loud (weak == 0) and only lost by the estimator right after another
+        // string's pick (its attack masks ringing notes) gets longer before it is released
+        const int missLimit = (S.weak == 0 && mSinceOnset < gTune.maskFrames * mFS) ? gTune.maskMiss * mFS : 8 * mFS;
+        if (S.weak >= 5 * mFS || S.miss >= missLimit)
         {
 #ifdef PT_TRACE
           if (mTraceEvents) printf("  [off %d weak %d miss %d]\n", n, S.weak, S.miss);
@@ -1100,11 +1180,53 @@ private:
     PROF_MARK(5)
   }
 
+  // How hard the note was picked, in dBFS (about the peak level of that note played alone): its
+  // own partials, read from the fast attack-mode windows (they only need to separate the note's
+  // own partials, and they have caught the attack by the time the note goes on). The whitened
+  // spectrum the tracker uses is flattened on purpose, so it can't be used for this.
+  float _NoteLevelDb(int n) const
+  {
+    // every partial up to ~5 kHz: a low string's level sits mostly in its upper partials
+    // (a pickup boosts them), so its first few alone would read it far too quiet
+    float e = 0.0f;
+    const float f0 = MidiToHz((float)n);
+    const int H = std::max(1, std::min(kCancelH, (int)(5000.0f / f0)));
+    for (int h = 1; h <= H; h++)
+    {
+      const float f = f0 * h;
+      const float a = _PartialR(f, kRaw, gTune.velRes >= 0 ? gTune.velRes : ResForK(f, gTune.attackK > 0.0f ? gTune.attackK : gTune.needK));
+      e += a * a;
+    }
+    return 10.0f * std::log10(e + 1e-20f) + gTune.velCalDb;
+  }
+
+  // Level of this note only, for re-pick detection: its partials from 1 to 5 kHz read from
+  // windows that separate semitones (there those are still the fast 16/32 ms ones), so a
+  // neighbouring note's pick doesn't leak in the way it does in the attack-mode windows.
+  float _NoteOwnLevelDb(int n) const
+  {
+    float e = 0.0f;
+    const float f0 = MidiToHz((float)n);
+    const int H = std::max(1, std::min(kCancelH, (int)(5000.0f / f0)));
+    for (int h = 1; h <= H; h++)
+    {
+      const float f = f0 * h;
+      if (f < gTune.repickLoHz)
+        continue;
+      const int r = ResForK(f, gTune.needK);
+      if (r > 1)
+        continue;
+      const float a = _PartialR(f, kTonal, r);
+      e += a * a;
+    }
+    return 10.0f * std::log10(e + 1e-20f);
+  }
+
   void _NoteOn(int n, float sal, int offset, std::vector<NoteEvent>& events)
   {
-    // velocity relative to the loudest recent note (independent of absolute input level)
-    mVelRef = std::max(mVelRef * mDecVel, sal);
-    const float db = LinToDb(sal / std::max(mVelRef, 1e-12f));
+    // fixed scale: velTopDb -> 127, velRangeDb below it -> 1 (the same pick always gives the
+    // same velocity; 0.3.x compared with a reference that faded in ~70 ms, so most notes were 127)
+    const float db = _NoteLevelDb(n) - mSet.velTopDb;
     const float range = std::max(6.0f, mSet.velRangeDb);
     const int vel = std::clamp((int)std::lround(127.0f * (1.0f + db / range)), 1, 127);
     _NoteOnVel(n, sal, vel, offset, events);
@@ -1120,6 +1242,8 @@ private:
     S.age = 0;
     S.salPeak = sal;
     S.hist.fill(sal);
+    S.lvlHist.fill(std::max(gTune.repickFloorDb, gTune.repickOwn ? _NoteOwnLevelDb(n) : _NoteLevelDb(n)));
+    S.lvlPeak = S.lvlHist[0];
     S.trackHz = MidiToHz((float)n);
     S.centsSm = 0.0f;
     S.sentCents = 0.0f;
@@ -1152,7 +1276,6 @@ private:
   int mHopCount = 0;
   TrackerSettings mSet;
   std::array<NoteState, kMaxNote> mNotes{};
-  float mVelRef = 0.0f;
   float mLevelDb = -120.0f;
   std::array<bool, kMaxNote> mLastDet{};
 public:
@@ -1166,7 +1289,7 @@ private:
   int mSinceOnset = 1000; // analysis frames since the last pick
   int mFS = 1;       // analysis frames per 2 ms
   int mHistN = 6;
-  float mKeep06 = 0.6f, mDecPeak = 0.9995f, mDecRes = 0.995f, mDecVel = 0.98f;
+  float mKeep06 = 0.6f, mDecPeak = 0.9995f, mDecRes = 0.995f;
 };
 
 } // namespace polytrack

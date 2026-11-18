@@ -57,6 +57,7 @@ enum EParams
   kSynthLevel,
   kMaster,
   kStrictOct, // added 0.1.1 (saved states from 0.1.0 have one parameter fewer)
+  kVelTop,    // added 0.4.0: input level of the hardest pick (velocity 127)
   kNumParams
 };
 
