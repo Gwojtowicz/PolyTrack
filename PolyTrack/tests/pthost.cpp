@@ -93,6 +93,7 @@ int main(int argc, char** argv)
     while (pos < s.size()) { size_t semi = s.find(';', pos); if (semi == std::string::npos) semi = s.size(); std::string it = s.substr(pos, semi - pos); double ms; int n, v; if (sscanf(it.c_str(), "%lf:%d:%d", &ms, &n, &v) == 3) notesIn.push_back({ms, n, v}); pos = semi + 1; }
   }
   const bool quiet = getenv("QUIET") != nullptr;
+  int badId = 0, badOfs = 0, strayOff = 0; static int held[16][128] = {};
   const int B = argc > 4 ? atoi(argv[4]) : 128;
   const double SR = argc > 5 ? atof(argv[5]) : 48000.0;
 
@@ -151,16 +152,18 @@ int main(int argc, char** argv)
     {
       Event e; outEv.getEvent(k, e);
       const double ms = (pos + e.sampleOffset) * 1000.0 / SR;
-      if (e.type == Event::kNoteOnEvent) { nOn++; if (!quiet) printf("%8.1f ms  ON  ch%-2d %-4s vel %d\n", ms, e.noteOn.channel + 1, NN(e.noteOn.pitch), (int)(e.noteOn.velocity * 127 + 0.5f)); }
-      else if (e.type == Event::kNoteOffEvent) { nOff++; if (!quiet) printf("%8.1f ms  OFF ch%-2d %-4s\n", ms, e.noteOff.channel + 1, NN(e.noteOff.pitch)); }
+      if (e.type == Event::kNoteOnEvent) { nOn++; if (e.noteOn.noteId != -1) badId++; if (e.sampleOffset < 0 || e.sampleOffset >= len) badOfs++; held[e.noteOn.channel & 15][e.noteOn.pitch & 127]++; if (!quiet) printf("%8.1f ms  ON  ch%-2d %-4s vel %d\n", ms, e.noteOn.channel + 1, NN(e.noteOn.pitch), (int)(e.noteOn.velocity * 127 + 0.5f)); }
+      else if (e.type == Event::kNoteOffEvent) { nOff++; if (e.noteOff.noteId != -1) badId++; if (e.sampleOffset < 0 || e.sampleOffset >= len) badOfs++; if (held[e.noteOff.channel & 15][e.noteOff.pitch & 127] > 0) held[e.noteOff.channel & 15][e.noteOff.pitch & 127]--; else strayOff++; if (!quiet) printf("%8.1f ms  OFF ch%-2d %-4s\n", ms, e.noteOff.channel + 1, NN(e.noteOff.pitch)); }
       else if (e.type == Event::kLegacyMIDICCOutEvent)
       {
         const int cc = e.midiCCOut.controlNumber;
-        if (cc == kPitchBend) { nBend++; }
+        if (cc == kPitchBend) { nBend++; if (getenv("BENDS")) printf("%8.1f ms  PB  ch%-2d %+.1f cents (range 2)\n", ms, e.midiCCOut.channel + 1, ((e.midiCCOut.value2 << 7 | e.midiCCOut.value) - 8192) / 8191.0 * 200.0); }
         else { nCC++; if (!quiet && nCC < 40) printf("%8.1f ms  CC  ch%-2d #%d = %d\n", ms, e.midiCCOut.channel + 1, cc, e.midiCCOut.value); }
       }
     }
   }
+  { int stuck = 0; for (auto& c : held) for (int v : c) stuck += v;
+    printf("note check: %d events with a noteId other than -1, %d with an offset outside the block, %d note-offs without a note-on, %d notes still on at the end\n", badId, badOfs, strayOff, stuck); }
   printf("events: %d on, %d off, %d bends, %d CC | CPU avg %.2f%% worst block %.1f%% of real time\n", nOn, nOff, nBend, nCC,
          100.0 * total / (n / SR), 100.0 * worst);
   FILE* f = fopen(argv[3], "wb"); fwrite(out.data(), 4, out.size(), f); fclose(f);

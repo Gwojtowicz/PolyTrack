@@ -1,7 +1,7 @@
 # PolyTrack
 
 Polyphonic guitar-to-MIDI for a normal pickup, plus a keyboard-chord harmonizer. Windows
-standalone app and VST3. Version 0.4.1.
+standalone app and VST3. Version 0.4.2.
 
 Insert it on a guitar track: your guitar passes through, and what you play comes out of the
 plug-in's MIDI output, chords included, with velocity and pitch bend. Route that MIDI to any

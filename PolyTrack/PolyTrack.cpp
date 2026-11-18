@@ -46,7 +46,7 @@ PolyTrack::PolyTrack(const InstanceInfo& info)
   GetParam(kTrackSource)->InitEnum("Track Input", kSrcIn1, {"In 1", "In 2", "In 1+2"});
   GetParam(kInGain)->InitDouble("Input Gain", 12.0, -12.0, 48.0, 0.5, "dB");
   GetParam(kGate)->InitDouble("Noise Gate", -72.0, -100.0, -30.0, 1.0, "dB");
-  GetParam(kSens)->InitDouble("Sensitivity", 40.0, 0.0, 100.0, 1.0, "%");
+  GetParam(kSens)->InitDouble("Sensitivity", 30.0, 0.0, 100.0, 1.0, "%"); // 0.4.2: 40 -> 30 (fewer ghost notes, chords held the same)
   GetParam(kMaxNotes)->InitInt("Max Notes", 6, 1, 6);
   GetParam(kLowNote)->InitInt("Lowest Note", 38, 28, 52);
   GetParam(kLowNote)->SetDisplayFunc([](double v, WDL_String& s) { NoteName((int)v, s); });
@@ -486,11 +486,12 @@ void PolyTrack::ProcessMidiMsg(const IMidiMsg& msg)
 void PolyTrack::_SendRaw(const std::vector<RawMidi>& v)
 {
   for (const RawMidi& r : v)
-    SendMidiMsg(IMidiMsg(r.offset, r.status, r.d1, r.d2));
+    SendMidiMsg(IMidiMsg(r.offset + mChunkBase, r.status, r.d1, r.d2));
 }
 
 void PolyTrack::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 {
+  mChunkBase = 0;
   _ReadSettings();
 
   if (gPanic.exchange(false))
@@ -543,8 +544,10 @@ void PolyTrack::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   for (int s = 0; s < nFrames; s += chunk)
   {
     const int n = std::min(chunk, nFrames - s);
+    mChunkBase = s; // MIDI from this chunk is stamped relative to the host block
     _Process(in1 + s, in2 + s, outputs[0] + s, outputs[1] + s, n);
   }
+  mChunkBase = 0;
 
   // meters: tracker input (after gain) and the output
   {

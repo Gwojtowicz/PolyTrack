@@ -87,7 +87,7 @@ static void RunSeq(const char* label, std::vector<SeqNote> seq, SeqStats& tot, b
 
   PolyTracker t;
   t.Init(SR);
-  { TrackerSettings ts; ts.strictOctaves = g_strict != 0; t.SetSettings(ts); }
+  { TrackerSettings ts; ts.strictOctaves = g_strict != 0; if (const char* e = getenv("SENS")) ts.sensitivity = (float)atof(e); t.SetSettings(ts); }
   struct Ev { NoteEvent e; double ts; };
   std::vector<Ev> evs;
   std::vector<NoteEvent> ev;

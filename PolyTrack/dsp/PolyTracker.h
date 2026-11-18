@@ -64,6 +64,8 @@ struct TrackerTuning
   float sharedRatio = 1.75f;               // ...a real upper note lifts them at least this much
   float holdRelYoung = 0.7f, holdRelOld = 0.4f;   // a sounding note stays detected with this x the new-note bar...
   float holdResYoung = 0.5f, holdResOld = 0.25f;  // ...and this x its own earlier strength (young = first 50 ms)
+  float bendDeadCents = 8.0f;             // pitch bend out: this close to the note counts as in tune
+  int bendHoldFrames = 10;                // (2 ms frames) no bends this early in a note
   int missBlock = 0;                      // a still-loud note lost by the estimator needs a new pick to return
   int missChord = 50;                      // ...while 3+ notes are sounding
   int missFrames = 8;                     // frames the estimator may miss a sounding note before release
@@ -1228,10 +1230,16 @@ private:
           _NoteOff(n, offset, events);
           continue;
         }
-        if (mSet.bendTracking && std::fabs(S.centsSm - S.sentCents) >= 3.0f)
+        // pitch bend out: within +-bendDeadCents counts as in tune (normal intonation; without it the
+        // estimate's jitter sent a stream of 0..4 cent bends), and nothing in the first 20 ms, where
+        // the attack still reads off-pitch (that sent a -30 cent blip at note starts)
+        float bendC = std::fabs(S.centsSm) < gTune.bendDeadCents ? 0.0f : S.centsSm;
+        if (S.age < gTune.bendHoldFrames * mFS)
+          bendC = 0.0f;
+        if (mSet.bendTracking && std::fabs(bendC - S.sentCents) >= 3.0f)
         {
-          S.sentCents = S.centsSm;
-          events.push_back({NoteEvent::kBend, n, 0, S.centsSm, offset});
+          S.sentCents = bendC;
+          events.push_back({NoteEvent::kBend, n, 0, bendC, offset});
         }
       }
     }

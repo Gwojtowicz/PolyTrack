@@ -135,6 +135,7 @@ private:
   std::vector<sample> mInMixL, mInMixR; // main input + side-chain (VST3 instrument)
   std::vector<polytrack::NoteEvent> mEvents;
   std::vector<polytrack::RawMidi> mMidiOut;   // audio thread
+  int mChunkBase = 0; // start of the current processing chunk inside the host block (MIDI offsets)
   std::vector<polytrack::RawMidi> mMidiOutIn; // produced inside ProcessMidiMsg
   std::vector<IMidiMsg> mThruQueue;
 

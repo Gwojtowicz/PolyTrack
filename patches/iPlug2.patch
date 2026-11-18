@@ -939,10 +939,53 @@ index 7397131f0..c929d5496 100644
        str.Insert(replaceStr, insertionPos);
      }
 diff --git a/IPlug/VST3/IPlugVST3_ProcessorBase.cpp b/IPlug/VST3/IPlugVST3_ProcessorBase.cpp
-index b02539a87..b1aa867ef 100644
+index b02539a87..d3bfac5b2 100644
 --- a/IPlug/VST3/IPlugVST3_ProcessorBase.cpp
 +++ b/IPlug/VST3/IPlugVST3_ProcessorBase.cpp
-@@ -178,7 +178,9 @@ void IPlugVST3ProcessorBase::ProcessMidiOut(IPlugQueue<SysExData>& sysExQueue, S
+@@ -129,7 +129,23 @@ void IPlugVST3ProcessorBase::ProcessMidiOut(IPlugQueue<SysExData>& sysExQueue, S
+     {
+       IMidiMsg& msg = mMidiOutputQueue.Peek();
+ 
+-      if (msg.StatusMsg() == IMidiMsg::kNoteOn)
++      // start every event clean: noteOn/noteOff share a union with different layouts, so reusing
++      // one Event left the previous note-on's velocity bits in the next note-off's noteId (and
++      // every note-on had noteId 0). Hosts that match note-offs by noteId then never
++      // ended those notes. noteId -1 = "no id": match by channel + pitch.
++      toAdd = {};
++      if (msg.StatusMsg() == IMidiMsg::kNoteOn && msg.Velocity() == 0)
++      {
++        // running-status style note-off (note-on, velocity 0)
++        Helpers::init(toAdd, Event::kNoteOffEvent, 0 /*bus id*/, msg.mOffset);
++        toAdd.noteOff.channel = msg.Channel();
++        toAdd.noteOff.pitch = msg.NoteNumber();
++        toAdd.noteOff.velocity = 0.f;
++        toAdd.noteOff.noteId = -1;
++        toAdd.noteOff.tuning = 0.f;
++        pOutputEvents->addEvent(toAdd);
++      }
++      else if (msg.StatusMsg() == IMidiMsg::kNoteOn)
+       {
+         Helpers::init(toAdd, Event::kNoteOnEvent, 0 /*bus id*/, msg.mOffset);
+ 
+@@ -137,6 +153,8 @@ void IPlugVST3ProcessorBase::ProcessMidiOut(IPlugQueue<SysExData>& sysExQueue, S
+         toAdd.noteOn.pitch = msg.NoteNumber();
+         toAdd.noteOn.tuning = 0.;
+         toAdd.noteOn.velocity = (float) msg.Velocity() * (1.f / 127.f);
++        toAdd.noteOn.length = 0;
++        toAdd.noteOn.noteId = -1;
+         pOutputEvents->addEvent(toAdd);
+       }
+       else if (msg.StatusMsg() == IMidiMsg::kNoteOff)
+@@ -146,6 +164,8 @@ void IPlugVST3ProcessorBase::ProcessMidiOut(IPlugQueue<SysExData>& sysExQueue, S
+         toAdd.noteOff.channel = msg.Channel();
+         toAdd.noteOff.pitch = msg.NoteNumber();
+         toAdd.noteOff.velocity = (float) msg.Velocity() * (1.f / 127.f);
++        toAdd.noteOff.noteId = -1;
++        toAdd.noteOff.tuning = 0.f;
+         pOutputEvents->addEvent(toAdd);
+       }
+       else if (msg.StatusMsg() == IMidiMsg::kPolyAftertouch)
+@@ -178,7 +198,9 @@ void IPlugVST3ProcessorBase::ProcessMidiOut(IPlugQueue<SysExData>& sysExQueue, S
          toAdd.midiCCOut.channel = msg.Channel();
          toAdd.sampleOffset = msg.mOffset;
          toAdd.midiCCOut.controlNumber = ControllerNumbers::kPitchBend;

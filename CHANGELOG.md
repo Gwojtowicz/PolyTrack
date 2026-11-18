@@ -1,5 +1,22 @@
 # PolyTrack changelog
 
+## 0.4.2 (2026-11-17)
+Fix: stuck notes in some DAWs (notes held until PANIC), fewer ghost notes, no pitch-bend jitter.
+- VST3 MIDI out (shared iPlug2 code): every outgoing note event reused one zero-filled event.
+  Note-on and note-off share memory with different layouts, so every note-on went out with
+  note ID 0 and every note-off with a random note ID (the previous note-on's velocity bits).
+  Hosts that match note-offs by note ID ended up never ending most notes. Every event now starts
+  clean with note ID -1 ("none": the host matches by channel and pitch). Checked in the test
+  host: 0 stray IDs, every note-on has its note-off, nothing left on, at 128/512/1024/2048 blocks.
+- MIDI from host blocks longer than 512 samples: events after the first 512 samples were stamped
+  as if they came at the start of the block, so a note-off could land before its note-on.
+- SENSITIVITY default 40% -> 30% for new instances (sequence test: wrong notes 66 -> 57, audible
+  ones 21 -> 15; chord tones held the same, 88%). Existing sessions keep their setting: turn it
+  down to ~30% if you get ghost notes.
+- Pitch bend out: within +-8 cents counts as in tune, and nothing in a note's first 20 ms. The
+  pitch estimate's jitter used to send a stream of 0-4 cent bends (138 vs 12 on the test file)
+  and a ~30 cent blip at note starts. Real bends and vibrato go out as before.
+
 ## 0.4.1 (2026-11-17)
 Fix: chord tones cut off, and doubled octaves in chords not read. New measure in tests/trk.cpp:
 how much of each chord tone's first 0.7 s (from 80 ms after its pick, all strings still
